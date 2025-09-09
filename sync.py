@@ -19,7 +19,7 @@ import os
 import hashlib
 import pickle
 from pathlib import Path
-from werobot import WeRoBot
+import wx as publish_client
 import requests
 import json
 import urllib.request
@@ -28,7 +28,7 @@ import string
 
 CACHE = {}
 
-CACHE_STORE = "cache.bin"
+CACHE_STORE = "data/cache.bin"
 
 def dump_cache():
     fp = open(CACHE_STORE, "wb")
@@ -42,34 +42,6 @@ def init_cache():
         #print(CACHE)
         return
     dump_cache()
-
-
-class NewClient:
-
-    def __init__(self):
-        self.__accessToken = ''
-        self.__leftTime = 0
-
-    def __real_get_access_token(self):
-        postUrl = ("https://api.weixin.qq.com/cgi-bin/token?grant_type="
-                   "client_credential&appid=%s&secret=%s" % (os.getenv('WECHAT_APP_ID'), os.getenv('WECHAT_APP_SECRET')))
-        urlResp = urllib.request.urlopen(postUrl)
-        urlResp = json.loads(urlResp.read())
-        self.__accessToken = urlResp['access_token']
-        self.__leftTime = urlResp['expires_in']
-
-    def get_access_token(self):
-        if self.__leftTime < 10:
-            self.__real_get_access_token()
-        return self.__accessToken
-
-def Client():
-    robot = WeRoBot()
-    robot.config["APP_ID"] = os.getenv('WECHAT_APP_ID')
-    robot.config["APP_SECRET"] = os.getenv('WECHAT_APP_SECRET')
-    client = robot.client
-    token = client.grant_token()
-    return client, token
 
 def cache_get(key):
     if key in CACHE:
@@ -100,10 +72,10 @@ def upload_image_from_path(image_path):
   res = cache_get(image_digest)
   if res != None:
       return res[0], res[1]
-  client, _ = Client()
+
   print("uploading image {}".format(image_path))
   try:
-    media_json = client.upload_permanent_media("image", open(image_path, "rb")) ##永久素材
+    media_json = publish_client.upload_image_to_wechat(image_path) ##永久素材
     media_id = media_json['media_id']
     media_url = media_json['url']
     CACHE[image_digest] = [media_id, media_url]
@@ -123,7 +95,7 @@ def upload_image(img_url):
   """
   resource = urllib.request.urlopen(img_url)
   name = img_url.split("/")[-1]
-  f_name = "/tmp/{}".format(name)
+  f_name = "data/{}".format(name)
   if "." not in f_name:
     f_name = f_name + ".png"
   with open(f_name, 'wb') as f:
@@ -162,7 +134,7 @@ def render_markdown(content):
             ),]
     post =  "".join(content.split("---\n")[2:])
     html = markdown.markdown(post, extensions=exts)
-    open("origi.html", "w").write(html)
+    open("data/origi.html", "w").write(html)
     return css_beautify(html)
 
 def update_images_urls(content, uploaded_images):
@@ -178,6 +150,8 @@ def replace_para(content):
     for line in content.split("\n"):
         if line.startswith("<p>"):
             line = line.replace("<p>", gen_css("para"))
+            line = line.replace("<ol>", gen_css("ol"))
+            line = line.replace("<li>", gen_css("li"))
         res.append(line)
     return "\n".join(res)
 
@@ -200,7 +174,7 @@ def replace_header(content):
     return "\n".join(res)
 
 def replace_links(content):
-    pq = PyQuery(open('origi.html').read())
+    pq = PyQuery(open('data/origi.html').read())
     links = pq('a')
     refs = []
     index = 1
@@ -227,7 +201,7 @@ def replace_links(content):
     return content
 
 def fix_image(content):
-    pq = PyQuery(open('origi.html').read())
+    pq = PyQuery(open('data/origi.html').read())
     imgs = pq('img')
     for line in imgs.items():
         link = """<img alt="{}" src="{}" />""".format(line.attr('alt'), line.attr('src'))
@@ -236,20 +210,17 @@ def fix_image(content):
     return content
 
 def format_fix(content):
-    # content = content.replace("<ul>\n<li>", "<ul><p></p><li>")
-    # content = content.replace("</li>\n</ul>", "</li></ul>")
-    # content = content.replace("<ol>\n<li>", "<ol><li>")
-    # content = content.replace("</li>\n</ol>", "</li></ol>")
-    content = content.replace("</li>", "</li>\n<p></p>")
+    content = content.replace("<ol>\n", "<ol>")
+    content = content.replace("</li>\n", "</li>")
     content = content.replace("background: #272822", gen_css("code"))
     content = content.replace("""<pre style="line-height: 125%">""", """<pre style="line-height: 125%; color: white; font-size: 11px;">""")
     return content
 
 def css_beautify(content):
+    content = format_fix(content)
     content = replace_para(content)
     content = replace_header(content)
     content = replace_links(content)
-    content = format_fix(content)
     content = fix_image(content)
     content = gen_css("header") + content + "</section>"
     return content
@@ -276,18 +247,20 @@ def upload_media_news(post_path):
         if image.startswith("http"):
             media_id, media_url = upload_image(image)
         else:
-            media_id, media_url = upload_image_from_path("./blog-source/source" + image)
+            image_path = os.path.join(os.path.dirname(post_path), image)
+            media_id, media_url = upload_image_from_path(image_path)
         if media_id != None:
             uploaded_images[image] = [media_id, media_url]
 
     content = update_images_urls(content, uploaded_images)
 
     THUMB_MEDIA_ID = (len(images) > 0 and uploaded_images[images[0]][0]) or ''
-    AUTHOR = 'yukang'
+    AUTHOR = '争光'
     RESULT = render_markdown(content)
-    link = os.path.basename(post_path).replace('.md', '')
+    # 截取/docs/后面的路径,包含/docs/
+    link =  "/docs/"+post_path.split('/docs/', 1)[-1].replace('.md', '')
     digest = fetch_attr(content, 'subtitle').strip().strip('"').strip('\'')
-    CONTENT_SOURCE_URL = 'https://catcoding.me/p/{}'.format(link)
+    CONTENT_SOURCE_URL = 'https://www.daozzg.com/{}'.format(link)
 
     articles = {
         'articles':
@@ -305,29 +278,24 @@ def upload_media_news(post_path):
         ]
     }
 
-    fp = open('./result.html', 'w')
+    fp = open('data/result.html', 'w')
     fp.write(RESULT)
     fp.close()
 
-    client = NewClient()
-    token = client.get_access_token()
-    headers={'Content-type': 'text/plain; charset=utf-8'}
-    datas = json.dumps(articles, ensure_ascii=False).encode('utf-8')
-
-    postUrl = "https://api.weixin.qq.com/cgi-bin/draft/add?access_token=%s" % token
-    r = requests.post(postUrl, data=datas, headers=headers)
-    resp = json.loads(r.text)
+    resp = publish_client.add_blog(articles)
     print(resp)
     media_id = resp['media_id']
     cache_update(post_path)
     return resp
 
-def run(string_date):
+def run(string_date,post_path):
     #string_date = "2023-03-13"
     print(string_date)
-    pathlist = Path("./blog-source/source/_posts").glob('**/*.md')
+    pathlist = Path(post_path).glob('**/*.md')
     for path in pathlist:
         path_str = str(path)
+        if path_str.endswith("_index.md"):
+            continue
         content = open (path_str , 'r').read()
         date = fetch_attr(content, 'date').strip()
         if string_date in date:
@@ -351,6 +319,6 @@ if __name__ == '__main__':
         print("start time: {}".format(x.strftime("%m/%d/%Y, %H:%M:%S")))
         string_date = x.strftime('%Y-%m-%d')
         print(string_date)
-        run(string_date)
+        run(string_date, "../zzg-blog/content/docs/ios/")
     end_time = time.time() #结束时间
     print("程序耗时%f秒." % (end_time - start_time))

@@ -8,3 +8,8 @@ cache.bin
 ob
 ob-pub
 node_modules
+data/
+__pycache__/
+*.pyc
+.venv/
+.vscode/

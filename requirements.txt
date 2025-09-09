@@ -1,0 +1,6 @@
+# requirements.txt
+
+Markdown==3.9
+Pygments==2.19.2
+WeRoBot==1.13.1
+PyYAML==6.0.2

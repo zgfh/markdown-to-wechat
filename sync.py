@@ -204,9 +204,13 @@ def fix_image(content):
     pq = PyQuery(open('data/origi.html').read())
     imgs = pq('img')
     for line in imgs.items():
-        link = """<img alt="{}" src="{}" />""".format(line.attr('alt'), line.attr('src'))
-        figure = gen_css("figure", link, line.attr('alt'))
-        content = content.replace(link, figure)
+        alt_name=line.attr('alt')
+        if alt_name.startswith("alt"):
+            alt_name = ""
+        origin_link="""<img alt="{}" src="{}" />""".format(line.attr('alt'), line.attr('src'))
+        link = """<img alt="{}" src="{}" />""".format(alt_name, line.attr('src'))
+        figure = gen_css("figure", link, alt_name)
+        content = content.replace(origin_link, figure)
     return content
 
 def format_fix(content):
@@ -299,7 +303,7 @@ def run(string_date,post_path):
         content = open (path_str , 'r').read()
         date = fetch_attr(content, 'date').strip()
         if string_date in date:
-            if file_processed(path_str):
+            if file_processed(path_str) and os.environ.get("FORCE") != "true":
                 print("{} has been processed".format(path_str))
                 continue
             print(path_str)
@@ -315,10 +319,10 @@ if __name__ == '__main__':
     print("begin sync to wechat")
     init_cache()
     start_time = time.time() # 开始时间
-    for x in daterange(datetime.now() - timedelta(days=7), datetime.now() + timedelta(days=2)):
+    for x in daterange(datetime.now() - timedelta(days=2), datetime.now() + timedelta(days=2)):
         print("start time: {}".format(x.strftime("%m/%d/%Y, %H:%M:%S")))
         string_date = x.strftime('%Y-%m-%d')
         print(string_date)
-        run(string_date, "../zzg-blog/content/docs/ios/")
+        run(string_date, "../zzg-blog/content/docs/")
     end_time = time.time() #结束时间
     print("程序耗时%f秒." % (end_time - start_time))

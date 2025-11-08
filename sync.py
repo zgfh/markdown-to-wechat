@@ -13,18 +13,24 @@ from datetime import date, timedelta
 import time
 import html
 import urllib
+import urllib.parse
 import markdown
 from markdown.extensions import codehilite
 import os
 import hashlib
 import pickle
+import re
 from pathlib import Path
+from typing import Dict, Tuple
+
 import wx as publish_client
 import requests
 import json
 import urllib.request
 import random
 import string
+
+from svg_utils import convert_svg_to_jpg, ensure_raster_image
 
 CACHE = {}
 
@@ -68,23 +74,24 @@ def file_processed(file_path):
     return cache_get(digest) != None
 
 def upload_image_from_path(image_path):
-  image_digest = file_digest(image_path)
-  res = cache_get(image_digest)
-  if res != None:
-      return res[0], res[1]
+    image_path = ensure_raster_image(image_path)
+    image_digest = file_digest(image_path)
+    res = cache_get(image_digest)
+    if res != None:
+        return res[0], res[1]
 
-  print("uploading image {}".format(image_path))
-  try:
-    media_json = publish_client.upload_image_to_wechat(image_path) ##永久素材
-    media_id = media_json['media_id']
-    media_url = media_json['url']
-    CACHE[image_digest] = [media_id, media_url]
-    dump_cache()
-    print("file: {} => media_id: {}".format(image_path, media_id))
-    return media_id, media_url
-  except Exception as e:
-    print("upload image error: {}".format(e))
-    return None, None
+    print("uploading image {}".format(image_path))
+    try:
+        media_json = publish_client.upload_image_to_wechat(image_path) ##永久素材
+        media_id = media_json['media_id']
+        media_url = media_json['url']
+        CACHE[image_digest] = [media_id, media_url]
+        dump_cache()
+        print("file: {} => media_id: {}".format(image_path, media_id))
+        return media_id, media_url
+    except Exception as e:
+        print("upload image error: {}".format(e))
+        return None, None
 
 def upload_image(img_url):
   """
@@ -100,16 +107,19 @@ def upload_image(img_url):
     f_name = f_name + ".png"
   with open(f_name, 'wb') as f:
     f.write(resource.read())
-  return upload_image_from_path(f_name)
+    prepared_path = ensure_raster_image(f_name)
+    return upload_image_from_path(prepared_path)
+
+MARKDOWN_IMAGE_PATTERN = re.compile(
+    r'!\[[^\]]*]\(\s*([^\s)]+?)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*\)',
+    re.IGNORECASE,
+)
+
 
 def get_images_from_markdown(content):
-    lines = content.split('\n')
     images = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith('![') and line.endswith(')'):
-            image = line.split('(')[1].split(')')[0].strip()
-            images.append(image)
+    for match in MARKDOWN_IMAGE_PATTERN.finditer(content):
+        images.append(match.group(1).strip())
     return images
 
 def fetch_attr(content, key):
@@ -136,6 +146,75 @@ def render_markdown(content):
     html = markdown.markdown(post, extensions=exts)
     open("data/origi.html", "w").write(html)
     return css_beautify(html)
+
+SVG_MARKDOWN_PATTERN = re.compile(
+    r'(!\[[^\]]*]\(\s*)([^\s)]+?\.svg)([^)]*\))',
+    re.IGNORECASE,
+)
+SVG_HTML_PATTERN = re.compile(
+    r'(<img[^>]*?src=["\'])\s*([^"\']+?\.svg)(["\'])',
+    re.IGNORECASE,
+)
+
+
+def replace_svg_references(content: str, post_path: str) -> Tuple[str, bool]:
+    """Convert local SVG references to JPG and update the document paths."""
+
+    post_dir = Path(post_path).parent
+    changed = False
+    converted_cache: Dict[str, str] = {}
+
+    def convert_path(path_str: str) -> str:
+        nonlocal changed
+
+        normalized = path_str.strip()
+        if normalized in converted_cache:
+            return converted_cache[normalized]
+
+        try:
+            parsed = urllib.parse.urlparse(normalized)
+        except Exception:
+            parsed = None
+
+        if parsed and parsed.scheme in ("http", "https"):
+            converted_cache[normalized] = normalized
+            return normalized
+
+        cleaned = normalized.split('#')[0].split('?')[0]
+        svg_full_path = (post_dir / cleaned).resolve()
+        if not svg_full_path.exists():
+            converted_cache[normalized] = normalized
+            converted_cache[cleaned] = normalized
+            return normalized
+
+        try:
+            jpg_path = convert_svg_to_jpg(svg_full_path)
+        except Exception as exc:
+            print("convert svg error: {}".format(exc))
+            converted_cache[normalized] = normalized
+            converted_cache[cleaned] = normalized
+            return normalized
+
+        new_path = str(jpg_path.resolve()).replace('\\', '/')
+        converted_cache[normalized] = new_path
+        converted_cache[cleaned] = new_path
+        if new_path != normalized:
+            changed = True
+        return new_path
+
+    def replace_markdown(match: re.Match) -> str:
+        original_path = match.group(2)
+        new_path = convert_path(original_path)
+        return "{}{}{}".format(match.group(1), new_path, match.group(3))
+
+    def replace_html(match: re.Match) -> str:
+        original_path = match.group(2)
+        new_path = convert_path(original_path)
+        return "{}{}{}".format(match.group(1), new_path, match.group(3))
+
+    updated_content = SVG_MARKDOWN_PATTERN.sub(replace_markdown, content)
+    updated_content = SVG_HTML_PATTERN.sub(replace_html, updated_content)
+    return updated_content, changed
 
 def update_images_urls(content, uploaded_images):
     for image, meta in uploaded_images.items():
@@ -234,7 +313,8 @@ def upload_media_news(post_path):
     """
     上传到微信公众号素材
     """
-    content = open (post_path , 'r').read()
+    content = open(post_path, 'r').read()
+    content, _ = replace_svg_references(content, post_path)
     TITLE = fetch_attr(content, 'title').strip('"').strip('\'')
     gen_cover = fetch_attr(content, 'gen_cover').strip('"')
     images = get_images_from_markdown(content)
